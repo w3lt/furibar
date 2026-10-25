@@ -1,19 +1,20 @@
 // swift-tools-version: 6.3
-// The swift-tools-version declares the minimum version of Swift required to build this package.
-
 import PackageDescription
 
 let package = Package(
     name: "Furibar",
+    platforms: [.macOS(.v14)],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
+        // Protocol, device state and session logic. No Bluetooth or UI code, so it is fully unit-testable.
+        .target(name: "FuribarCore"),
+        // The menu bar app: SwiftUI UI plus CoreBluetooth / IOBluetooth transports.
         .executableTarget(
-            name: "Furibar"
+            name: "Furibar",
+            dependencies: ["FuribarCore"]
         ),
         .testTarget(
-            name: "FuribarTests",
-            dependencies: ["Furibar"]
+            name: "FuribarCoreTests",
+            dependencies: ["FuribarCore"]
         ),
     ],
     swiftLanguageModes: [.v6]
