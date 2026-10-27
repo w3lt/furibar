@@ -28,21 +28,33 @@ public final class Preferences {
         didSet { defaults.set(showBatteryInMenuBar, forKey: Keys.showBattery) }
     }
 
-    public var demoMode: Bool {
-        didSet { if !demoForcedByLaunchArgument { defaults.set(demoMode, forKey: Keys.demo) } }
+    /// Only for this run, so a relaunch never shows pretend battery levels by surprise.
+    /// The `--demo` launch argument turns it on at startup.
+    public var demoMode: Bool
+
+    /// Bluetooth LE earbuds the user picked from the nearby list (CoreBluetooth identifiers,
+    /// which are specific to this Mac). Furibar reconnects to these without asking again.
+    public private(set) var chosenEarbuds: Set<String> {
+        didSet { defaults.set(Array(chosenEarbuds).sorted(), forKey: Keys.chosenEarbuds) }
     }
 
     public private(set) var launchAtLogin: Bool
-
-    @ObservationIgnored private let demoForcedByLaunchArgument: Bool
 
     public init(defaults: UserDefaults = .standard, arguments: [String] = CommandLine.arguments) {
         self.defaults = defaults
         connection = Connection(rawValue: defaults.string(forKey: Keys.connection) ?? "") ?? .automatic
         showBatteryInMenuBar = defaults.object(forKey: Keys.showBattery) as? Bool ?? true
-        demoForcedByLaunchArgument = arguments.contains("--demo")
-        demoMode = demoForcedByLaunchArgument || defaults.bool(forKey: Keys.demo)
+        demoMode = arguments.contains("--demo")
+        chosenEarbuds = Set(defaults.stringArray(forKey: Keys.chosenEarbuds) ?? [])
         launchAtLogin = SMAppService.mainApp.status == .enabled
+    }
+
+    public func choose(_ earbuds: UUID) {
+        chosenEarbuds.insert(earbuds.uuidString)
+    }
+
+    public func forgetChosenEarbuds() {
+        chosenEarbuds.removeAll()
     }
 
     public func setLaunchAtLogin(_ on: Bool) {
@@ -57,6 +69,6 @@ public final class Preferences {
     private enum Keys {
         static let connection = "connection"
         static let showBattery = "showBatteryInMenuBar"
-        static let demo = "demoMode"
+        static let chosenEarbuds = "chosenEarbuds"
     }
 }

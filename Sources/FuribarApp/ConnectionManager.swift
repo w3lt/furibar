@@ -1,5 +1,6 @@
 import CoreBluetooth
 import FuribarCore
+import Foundation
 import Observation
 
 /// Finds the earbuds, keeps one control link open, and reconnects when it drops.
@@ -24,12 +25,19 @@ public final class ConnectionManager {
     public private(set) var transport: Transport?
     public private(set) var deviceName = ""
     public private(set) var model: EarbudModel = Advert.furina
+    /// Earbuds seen over Bluetooth LE that aren't paired with this Mac, for the user to pick from.
+    public private(set) var nearby: [NearbyEarbuds] = []
+    /// What happened while finding and connecting, for Diagnostics. Kept across reconnects.
+    public private(set) var events: [LogEntry] = []
+    /// Traffic from the last session, kept after it ends so it can still be copied.
+    public private(set) var previousTraffic: [LogEntry] = []
 
     public let preferences: Preferences
 
     @ObservationIgnored private var ble: BLEConnector?
     @ObservationIgnored private var classic: ClassicConnector?
     @ObservationIgnored private var pollTask: Task<Void, Never>?
+    private static let maxEvents = 200
 
     public init(preferences: Preferences) {
         self.preferences = preferences
@@ -37,8 +45,10 @@ public final class ConnectionManager {
 
     public func start() {
         if preferences.demoMode {
+            note("Demo mode: using pretend earbuds")
             attach(DemoEarbuds(), name: "Demo earbuds", model: Advert.furina, via: .demo)
         } else {
+            note("Looking for earbuds (\(preferences.connection.title))")
             search()
         }
     }
@@ -48,8 +58,35 @@ public final class ConnectionManager {
         dropSession()
         ble?.stop()
         classic?.stop()
+        nearby = []
         status = .idle
         start()
+    }
+
+    public func setConnection(_ connection: Preferences.Connection) {
+        guard connection != preferences.connection else { return }
+        preferences.connection = connection
+        restart()
+    }
+
+    public func setDemoMode(_ on: Bool) {
+        guard on != preferences.demoMode else { return }
+        preferences.demoMode = on
+        restart()
+    }
+
+    /// Connects to earbuds from `nearby` and remembers the choice.
+    public func connect(to earbuds: NearbyEarbuds) {
+        note("You chose \(earbuds.name)")
+        preferences.choose(earbuds.id)
+        ble?.chosen = preferences.chosenEarbuds
+        ble?.connect(to: earbuds.id)
+    }
+
+    public func forgetChosenEarbuds() {
+        preferences.forgetChosenEarbuds()
+        note("Forgot the earbuds chosen before")
+        restart()
     }
 
     /// Sends a change. Failures show up as `session.lastError`.
@@ -73,6 +110,7 @@ public final class ConnectionManager {
             connector.onEvent = { [weak self] in self?.handle($0) }
             ble = connector
         }
+        ble?.chosen = preferences.chosenEarbuds
         if classic == nil {
             let connector = ClassicConnector()
             connector.onEvent = { [weak self] in self?.handle($0) }
@@ -93,6 +131,7 @@ public final class ConnectionManager {
         switch event {
         case .state(let state):
             guard transport != .demo else { return }
+            note("Bluetooth: \(Self.describe(state))")
             if state != .poweredOn {
                 dropSession()
                 classic?.stop()
@@ -103,6 +142,10 @@ public final class ConnectionManager {
             attach(link, name: name, model: model ?? Advert.furina, via: .ble)
         case .lost:
             if transport == .ble { linkLost() }
+        case .nearby(let list):
+            nearby = list
+        case .note(let text):
+            note("LE · \(text)")
         }
     }
 
@@ -112,6 +155,8 @@ public final class ConnectionManager {
             attach(link, name: name, model: Advert.furina, via: .classic)
         case .lost:
             if transport == .classic { linkLost() }
+        case .note(let text):
+            note("Classic · \(text)")
         }
     }
 
@@ -121,7 +166,18 @@ public final class ConnectionManager {
         case .unauthorized: status = .unauthorized
         case .unsupported: status = .unsupported
         case .poweredOn: if session == nil { status = .searching }
-        default: break
+        default: if session == nil { status = .idle } // resetting or not known yet
+        }
+    }
+
+    private static func describe(_ state: CBManagerState) -> String {
+        switch state {
+        case .poweredOn: "on"
+        case .poweredOff: "off"
+        case .unauthorized: "not allowed for Furibar"
+        case .unsupported: "not supported"
+        case .resetting: "resetting"
+        default: "starting"
         }
     }
 
@@ -136,12 +192,15 @@ public final class ConnectionManager {
         transport = via
         deviceName = name
         self.model = model
+        nearby = []
         status = .connected
+        note("Connected to \(name) over \(via.rawValue)")
         newSession.start()
         startBatteryPolling()
     }
 
     private func linkLost() {
+        note("Lost the connection to \(deviceName)")
         dropSession()
         status = .searching
         beginSearchIfPossible()
@@ -150,6 +209,7 @@ public final class ConnectionManager {
     private func dropSession() {
         pollTask?.cancel()
         pollTask = nil
+        if let session { previousTraffic = session.log }
         session = nil
         transport = nil
     }
@@ -163,5 +223,10 @@ public final class ConnectionManager {
                 self?.session?.refresh([.battery])
             }
         }
+    }
+
+    private func note(_ text: String) {
+        events.append(LogEntry(direction: .note, text: text))
+        if events.count > Self.maxEvents { events.removeFirst(events.count - Self.maxEvents) }
     }
 }

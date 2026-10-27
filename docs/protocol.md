@@ -9,7 +9,15 @@ These notes describe the part of the RoseLink protocol that Furibar uses. They c
 | BLE manufacturer data prefix | `0B 11 0A 0C` (company ID bytes included). The longest prefix wins: RoseLink compares 6, then 4, then 3 bytes. |
 | Byte 6 of the advert | Device kind: `01` earbuds, `04` microphone, anything else headphones |
 | Byte 7 of the advert | `01` = Classic Bluetooth available |
-| Bytes 11–16 of the advert | MAC address (only when the advert is at least 17 bytes) |
+| Bytes 11–16 of the advert | MAC address (only when the advert is at least 17 bytes). *Assumed* to be the Classic Bluetooth address; Furibar accepts either byte order. |
+
+Any Roseselsa earbuds in range advertise this way, so Furibar connects over Bluetooth LE on its own only to:
+
+1. earbuds already connected to this Mac over LE,
+2. earbuds whose advertised address matches a device paired with this Mac, or
+3. earbuds the user picked from the **Nearby** list before.
+
+Everything else is listed under Nearby and left alone. Classic Bluetooth only ever uses paired devices that are connected to this Mac.
 
 ## Transports
 
@@ -45,8 +53,9 @@ Furibar tries both at once and uses whichever opens first. You can force one in 
 | `03` | invalid value |
 | `04` | not supported |
 | `05` | busy |
+| `06` | target not connected |
 
-Furibar shows a change right away. If the earbuds refuse it, the old value comes back and a message appears. If no ACK arrives within 2 seconds, Furibar reads the setting back instead of guessing.
+Furibar shows a change right away. If the earbuds refuse it, the last value they confirmed comes back and a message appears. If no ACK arrives within 2 seconds, Furibar reads the setting back instead of guessing. Find device is a one-off command, so it's sent without changing what the panel shows.
 
 ## Settings Furibar uses
 
@@ -85,3 +94,5 @@ Open **Diagnostics** with the earbuds connected:
 1. Compare **Reported values** with what RoseLink shows on a phone, for example battery percentages and firmware version.
 2. Change a setting on the earbuds (for example noise mode by touch) and check that the matching value updates.
 3. Use **Copy Log** to share a trace. It includes the earbuds' MAC address if they report it.
+
+Diagnostics is also available when Furibar can't connect. Its **Connection** log shows what each transport tried: devices seen, the address in each advert, the service lookup, and why a device was skipped.

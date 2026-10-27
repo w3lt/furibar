@@ -42,3 +42,9 @@ render(PanelView().environment(manager), "panel-dark", dark: true)
 for (status, name) in [(ConnectionManager.Status.searching, "status-searching"), (.unauthorized, "status-unauthorized")] {
     render(StatusCard(status: status, retry: {}, tryDemo: {}).padding(12).frame(width: 340), name)
 }
+
+let nearby = [
+    NearbyEarbuds(id: UUID(), name: "Furina", model: Advert.furina.displayName),
+    NearbyEarbuds(id: UUID(), name: "Zircon", model: "Zircon"),
+]
+render(StatusCard(status: .searching, nearby: nearby, retry: {}, tryDemo: {}).padding(12).frame(width: 340), "status-nearby")

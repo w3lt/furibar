@@ -17,9 +17,10 @@ A macOS menu bar app for the **Genshin Impact Furina "Endless Solo" earbuds** by
 - **Sound:** EQ presets
 - **Controls:** touch controls and in-ear detection
 - **Device:** voice prompt language and volume, multipoint, find my earbuds, firmware version
-- **Diagnostics:** every raw value the earbuds report, a live traffic log, a raw command sender, and Copy Log
-- **Demo mode**, so you can try the app without earbuds
+- **Diagnostics:** every raw value the earbuds report, a live traffic log, a connection log (also when it can't connect), a raw command sender, and Copy Log
+- **Demo mode**, so you can try the app without earbuds (it's off again after a relaunch)
 - Connects over Classic Bluetooth or Bluetooth LE, whichever works, and reconnects on its own
+- Only connects on its own to **your** earbuds: ones paired with this Mac, or ones you picked before. Other Roseselsa earbuds nearby are listed for you to choose, never connected to silently
 
 The panel only shows settings your earbuds actually report.
 
@@ -40,6 +41,8 @@ The first time it connects, macOS asks for Bluetooth access. Click Allow. To sta
 
 To try it without earbuds, turn on **Demo mode** in the gear menu, or run `open build/Furibar.app --args --demo`.
 
+If your earbuds show up under **Nearby** instead of connecting, click **Connect** next to them. Furibar remembers the choice; **Forget Chosen Earbuds** in the gear menu undoes it.
+
 ### Building on another Mac
 
 If you build on a machine without Bluetooth (for example a virtual Mac), copy `build/Furibar.zip` to the Mac that has the earbuds:
@@ -49,7 +52,11 @@ scp user@build-mac:path/to/furibar/build/Furibar.zip ~/Downloads/
 cd ~/Downloads && unzip -o Furibar.zip && open Furibar.app
 ```
 
-The app is ad-hoc signed. If macOS refuses to open it, right-click it and choose Open.
+The app is ad-hoc signed. If macOS says it can't be opened, open **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. Or clear the download flag in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine Furibar.app
+```
 
 ## Development
 

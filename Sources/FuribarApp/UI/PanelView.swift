@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import FuribarCore
 
@@ -26,9 +27,14 @@ public struct PanelView: View {
             } else {
                 StatusCard(
                     status: manager.status,
+                    nearby: manager.nearby,
                     retry: { manager.restart() },
-                    tryDemo: { manager.preferences.demoMode = true } // the footer restarts on change
+                    tryDemo: { manager.setDemoMode(true) },
+                    connect: { manager.connect(to: $0) }
                 )
+                FoldSection(id: "diagnostics", title: "Diagnostics", symbol: "waveform.circle", expanded: $expanded) {
+                    DiagnosticsContent(session: nil)
+                }
             }
 
             FooterView()
@@ -36,6 +42,11 @@ public struct PanelView: View {
         .padding(12)
         .frame(width: 340)
         .onAppear { manager.refreshQuickState() }
+        // The menu bar window is kept around between openings, so onAppear may only fire once.
+        // It becomes key each time it opens, and it's the app's only window.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            manager.refreshQuickState()
+        }
     }
 
     private var subtitle: String {
@@ -97,13 +108,19 @@ struct HeaderView: View {
 /// Shown when there is no connection: what's wrong and what to do about it.
 public struct StatusCard: View {
     let status: ConnectionManager.Status
+    let nearby: [NearbyEarbuds]
     let retry: () -> Void
     let tryDemo: () -> Void
+    let connect: (NearbyEarbuds) -> Void
 
-    public init(status: ConnectionManager.Status, retry: @escaping () -> Void, tryDemo: @escaping () -> Void) {
+    public init(status: ConnectionManager.Status, nearby: [NearbyEarbuds] = [],
+                retry: @escaping () -> Void, tryDemo: @escaping () -> Void,
+                connect: @escaping (NearbyEarbuds) -> Void = { _ in }) {
         self.status = status
+        self.nearby = nearby
         self.retry = retry
         self.tryDemo = tryDemo
+        self.connect = connect
     }
 
     public var body: some View {
@@ -128,6 +145,30 @@ public struct StatusCard: View {
                     Chip(title: "Try Again", symbol: "arrow.clockwise", selected: true, action: retry)
                 }
                 Chip(title: "Try Demo", symbol: "sparkles", selected: false, action: tryDemo)
+            }
+
+            if status == .searching, !nearby.isEmpty {
+                Divider().padding(.vertical, 2)
+                CardTitle(text: "Nearby")
+                Text("These aren't paired with this Mac, so Furibar won't connect to them on its own. Connect only to your own earbuds.")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ForEach(nearby) { earbuds in
+                    HStack(spacing: 8) {
+                        Image(systemName: "earbuds")
+                            .font(.system(size: 13))
+                            .foregroundStyle(Theme.hydro)
+                            .frame(width: 20)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(earbuds.name).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            Text(earbuds.model).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        Chip(title: "Connect", selected: false) { connect(earbuds) }
+                            .frame(width: 80)
+                    }
+                }
             }
         }
     }
@@ -401,8 +442,7 @@ struct DeviceContent: View {
     }
 }
 
-/// Plays a tone so a lost earbud can be found. The side byte values are a best guess
-/// (01 left, 02 right); 04 stops, per the protocol report.
+/// Plays a tone so a lost earbud can be found. The side bytes are a best guess (see `FindTarget`).
 struct FindEarbudsRow: View {
     @Environment(ConnectionManager.self) private var manager
 
@@ -411,9 +451,9 @@ struct FindEarbudsRow: View {
             RowLabel(title: "Find my earbuds", symbol: "bell.and.waves.left.and.right",
                      detail: "Plays a loud tone. Take the earbuds out first.")
             HStack(spacing: 6) {
-                Chip(title: "Left", symbol: "play.fill", selected: false) { manager.apply(.raw(.findDevice, [0x01])) }
-                Chip(title: "Right", symbol: "play.fill", selected: false) { manager.apply(.raw(.findDevice, [0x02])) }
-                Chip(title: "Stop", symbol: "stop.fill", selected: false) { manager.apply(.raw(.findDevice, [0x04])) }
+                Chip(title: "Left", symbol: "play.fill", selected: false) { manager.apply(.findDevice(.left)) }
+                Chip(title: "Right", symbol: "play.fill", selected: false) { manager.apply(.findDevice(.right)) }
+                Chip(title: "Stop", symbol: "stop.fill", selected: false) { manager.apply(.findDevice(.stop)) }
             }
         }
     }
@@ -426,7 +466,10 @@ struct FooterView: View {
         @Bindable var prefs = manager.preferences
         HStack {
             Menu {
-                Picker("Connection", selection: $prefs.connection) {
+                Picker("Connection", selection: Binding(
+                    get: { prefs.connection },
+                    set: { manager.setConnection($0) }
+                )) {
                     ForEach(Preferences.Connection.allCases) { Text($0.title).tag($0) }
                 }
                 Toggle("Show battery in menu bar", isOn: $prefs.showBatteryInMenuBar)
@@ -434,9 +477,15 @@ struct FooterView: View {
                     get: { prefs.launchAtLogin },
                     set: { prefs.setLaunchAtLogin($0) }
                 ))
-                Toggle("Demo mode", isOn: $prefs.demoMode)
+                Toggle("Demo mode", isOn: Binding(
+                    get: { prefs.demoMode },
+                    set: { manager.setDemoMode($0) }
+                ))
                 Divider()
                 Button("Reconnect") { manager.restart() }
+                if !prefs.chosenEarbuds.isEmpty {
+                    Button("Forget Chosen Earbuds") { manager.forgetChosenEarbuds() }
+                }
             } label: {
                 Image(systemName: "gearshape")
             }
@@ -458,8 +507,6 @@ struct FooterView: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 4)
-        .onChange(of: prefs.connection) { manager.restart() }
-        .onChange(of: prefs.demoMode) { manager.restart() }
     }
 }
 
