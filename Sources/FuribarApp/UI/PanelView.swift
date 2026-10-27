@@ -41,11 +41,11 @@ public struct PanelView: View {
         }
         .padding(12)
         .frame(width: 340)
-        .onAppear { manager.refreshQuickState() }
+        .onAppear { manager.panelOpened() }
         // The menu bar window is kept around between openings, so onAppear may only fire once.
         // It becomes key each time it opens, and it's the app's only window.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
-            manager.refreshQuickState()
+            manager.panelOpened()
         }
     }
 

@@ -74,11 +74,10 @@ public final class DeviceSession {
     private var encoder = FrameEncoder()
     private var decoder = FrameDecoder()
     private var pendingAcks: [UInt8: CheckedContinuation<AckOutcome, Never>] = [:]
-    /// What the earbuds last reported or accepted. A refused change goes back to this,
-    /// not to whatever was on screen, which may itself have been an unconfirmed change.
+    /// What the earbuds last reported or accepted.
     private var confirmed = DeviceState()
-    /// Changes sent per setting that haven't been answered yet.
-    private var unanswered: [SettingType: Int] = [:]
+    /// Changes sent per setting that haven't been answered yet, oldest first.
+    private var pending: [SettingType: [(seq: UInt8, value: [UInt8])]] = [:]
     private static let maxLogEntries = 400
 
     private enum AckOutcome { case status(AckStatus), timeout }
@@ -103,30 +102,36 @@ public final class DeviceSession {
     public func apply(_ change: SettingChange) async throws {
         let record = change.record
         let type = SettingType(record.type)
-        // Commands like "find my earbuds" are actions, not settings: nothing to show.
-        if change.isSetting { state.apply(record) }
         lastError = nil
-        unanswered[type, default: 0] += 1
-
         let seq = send(Payload.write(type, record.value))
+        // Commands like "find my earbuds" are actions, not settings: nothing to show or read back.
+        guard change.isSetting else {
+            if case .status(let status) = await waitForAck(seq), status != .success { throw reject(type, status) }
+            return
+        }
+
+        state.apply(record)
+        pending[type, default: []].append((seq, record.value))
         let outcome = await waitForAck(seq)
-        unanswered[type, default: 1] -= 1
-        let stillPending = unanswered[type, default: 0] > 0
-        if !stillPending { unanswered[type] = nil }
+        if let i = pending[type]?.firstIndex(where: { $0.seq == seq }) { pending[type]?.remove(at: i) }
+        if pending[type]?.isEmpty == true { pending[type] = nil }
 
         switch outcome {
-        case .status(.success):
-            if change.isSetting { confirmed.apply(record) }
         case .status(let status):
-            // If a newer change to the same setting is on its way, keep showing that one.
-            if change.isSetting, !stillPending { state.restore(type, confirmed.raw[type]) }
-            lastError = CommandError.rejected(status).errorDescription
-            note("\(type.name): rejected (\(status))")
-            throw CommandError.rejected(status)
+            if status == .success { confirmed.apply(record) }
+            // Show the newest change still on its way, or else what the earbuds last confirmed.
+            state.restore(type, pending[type]?.last?.value ?? confirmed.raw[type])
+            if status != .success { throw reject(type, status) }
         case .timeout:
             note("\(type.name): no acknowledgement, reading it back")
             refresh([type])
         }
+    }
+
+    private func reject(_ type: SettingType, _ status: AckStatus) -> CommandError {
+        lastError = CommandError.rejected(status).errorDescription
+        note("\(type.name): rejected (\(status))")
+        return .rejected(status)
     }
 
     /// Diagnostics: send any payload, wrapped in a frame. Returns false if it's too long for one frame.

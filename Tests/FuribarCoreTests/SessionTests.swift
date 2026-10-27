@@ -163,4 +163,33 @@ struct SessionTests {
         await second.value
         #expect(session.state.noiseMode == .off)
     }
+
+    @Test func newerRefusedChangeIsUndoneEvenWhileAnOlderOneIsPending() async {
+        let (link, session, first, second) = await twoPendingNoiseChanges()
+        link.deliver(ackFrame(for: 0x02, .busy))
+        await second.value
+        #expect(session.state.noiseMode == .off) // the older change is still on its way
+        link.deliver(ackFrame(for: 0x01, .success))
+        await first.value
+        #expect(session.state.noiseMode == .off)
+    }
+
+    @Test func reportArrivingBeforeTheAckDoesNotHideTheAcceptedChange() async {
+        let link = RecordingLink()
+        let session = DeviceSession(link: link, ackTimeout: .seconds(5))
+        link.deliver(deviceFrame(.noiseMode, [0x01]))
+        let change = Task { _ = try? await session.apply(.noiseMode(.off)) }
+        await waitUntil { link.sent.count == 1 }
+        link.deliver(deviceFrame(.noiseMode, [0x01])) // a read reply from just before the change
+        link.deliver(ackFrame(for: 0x01, .success))
+        await change.value
+        #expect(session.state.noiseMode == .off)
+    }
+
+    @Test func findDeviceWithoutAnAckIsNotReadBack() async throws {
+        let link = RecordingLink()
+        let session = DeviceSession(link: link, ackTimeout: .milliseconds(20))
+        try await session.apply(.findDevice(.left))
+        #expect(link.sent.count == 1)
+    }
 }

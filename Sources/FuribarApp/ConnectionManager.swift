@@ -84,7 +84,9 @@ public final class ConnectionManager {
     }
 
     public func forgetChosenEarbuds() {
+        ble?.forget(preferences.chosenEarbuds.compactMap(UUID.init(uuidString:)))
         preferences.forgetChosenEarbuds()
+        ble?.chosen = []
         note("Forgot the earbuds chosen before")
         restart()
     }
@@ -95,9 +97,13 @@ public final class ConnectionManager {
         Task { try? await session.apply(change) }
     }
 
-    /// Cheap refresh for when the panel opens.
-    public func refreshQuickState() {
-        session?.refresh([.battery, .noiseMode])
+    /// When the panel opens: a cheap refresh, or another look at the nearby list.
+    public func panelOpened() {
+        if let session {
+            session.refresh([.battery, .noiseMode])
+        } else {
+            ble?.recheckNearby()
+        }
     }
 
     // MARK: - Searching

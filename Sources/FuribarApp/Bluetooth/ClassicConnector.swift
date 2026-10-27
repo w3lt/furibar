@@ -29,6 +29,8 @@ final class RFCOMMLink: NSObject, ByteLink {
     func close() {
         onClosed = nil
         onOpen = nil
+        // The channel doesn't retain its delegate (macOS 10.6+), so detach before this object can go away.
+        _ = channel?.setDelegate(nil)
         _ = channel?.close()
         channel = nil
     }
@@ -74,7 +76,12 @@ final class ClassicConnector: NSObject {
     private var link: RFCOMMLink?
     /// The link whose channel is still opening. Holding it keeps it alive until then.
     private var pendingLink: RFCOMMLink?
+    /// Links still opening when the connector stopped. Kept alive until the open finishes,
+    /// then closed, so the channel is never left open with no owner.
+    private var abandoned = Set<RFCOMMLink>()
     private var queried = Set<String>()
+    private var sdpFailures: [String: Int] = [:]
+    private static let maxSDPFailures = 3
     private var lastSeen: [String] = []
     private var connectNotification: IOBluetoothUserNotification?
     private var retryTimer: Timer?
@@ -83,6 +90,7 @@ final class ClassicConnector: NSObject {
         guard !active else { return }
         active = true
         queried.removeAll()
+        sdpFailures.removeAll()
         lastSeen = []
         connectNotification = IOBluetoothDevice.register(forConnectNotifications: self,
                                                          selector: #selector(deviceConnected(_:device:)))
@@ -100,7 +108,7 @@ final class ClassicConnector: NSObject {
         retryTimer = nil
         link?.close()
         link = nil
-        pendingLink?.close()
+        if let pendingLink { abandoned.insert(pendingLink) }
         pendingLink = nil
     }
 
@@ -139,8 +147,9 @@ final class ClassicConnector: NSObject {
         note("Opening the control channel on \(name) (RFCOMM \(channelID))")
         let newLink = RFCOMMLink()
         newLink.onOpen = { [weak self, weak newLink] ok in
-            guard let self, let newLink, newLink === self.pendingLink else {
-                newLink?.close() // stopped or replaced while opening
+            guard let self, let newLink else { return }
+            if self.abandoned.remove(newLink) != nil || newLink !== self.pendingLink {
+                newLink.close() // stopped or replaced while opening
                 return
             }
             self.pendingLink = nil
@@ -155,6 +164,7 @@ final class ClassicConnector: NSObject {
         }
         newLink.onClosed = { [weak self, weak newLink] in
             guard let self, let newLink else { return }
+            if self.abandoned.remove(newLink) != nil { return }
             if newLink === self.pendingLink {
                 self.pendingLink = nil
                 self.note("The control channel on \(name) closed while opening")
@@ -176,6 +186,17 @@ final class ClassicConnector: NSObject {
         }
         newLink.channel = channel
         pendingLink = newLink
+        Task { @MainActor [weak self, weak newLink] in
+            try? await Task.sleep(for: .seconds(15))
+            guard let self, let newLink else { return }
+            if newLink === self.pendingLink {
+                self.pendingLink = nil
+                self.note("The control channel on \(name) didn't open in time")
+            } else if self.abandoned.remove(newLink) == nil {
+                return // opened or closed normally
+            }
+            newLink.close()
+        }
     }
 
     private func note(_ text: String) {
@@ -189,9 +210,15 @@ final class ClassicConnector: NSObject {
     @objc func sdpQueryComplete(_ device: IOBluetoothDevice, status: IOReturn) {
         let name = device.name ?? device.addressString ?? "device"
         guard status == kIOReturnSuccess else {
-            // Let the next look (every 15 seconds) ask again.
-            queried.remove(device.addressString ?? "")
-            note("Service lookup on \(name) failed (\(Self.describe(status))); will retry")
+            let address = device.addressString ?? ""
+            let failures = sdpFailures[address, default: 0] + 1
+            sdpFailures[address] = failures
+            if failures < Self.maxSDPFailures {
+                queried.remove(address) // the next look (every 15 seconds) asks again
+                note("Service lookup on \(name) failed (\(Self.describe(status))); will retry")
+            } else {
+                note("Service lookup on \(name) failed \(failures) times; waiting until it reconnects")
+            }
             return
         }
         guard active, link == nil, pendingLink == nil else { return }
@@ -204,6 +231,7 @@ final class ClassicConnector: NSObject {
 
     @objc func deviceConnected(_ note: IOBluetoothUserNotification, device: IOBluetoothDevice) {
         queried.remove(device.addressString ?? "")
+        sdpFailures[device.addressString ?? ""] = nil
         // Give the audio connection a moment to settle before opening the control channel.
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(2))

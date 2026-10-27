@@ -55,7 +55,7 @@ Furibar tries both at once and uses whichever opens first. You can force one in 
 | `05` | busy |
 | `06` | target not connected |
 
-Furibar shows a change right away. If the earbuds refuse it, the last value they confirmed comes back and a message appears. If no ACK arrives within 2 seconds, Furibar reads the setting back instead of guessing. Find device is a one-off command, so it's sent without changing what the panel shows.
+Furibar shows a change right away. If the earbuds refuse it, the last value they confirmed comes back and a message appears. If no ACK arrives within 2 seconds, Furibar reads the setting back instead of guessing. Find device is a one-off command, so it's sent without changing what the panel shows, and isn't read back.
 
 ## Settings Furibar uses
 
