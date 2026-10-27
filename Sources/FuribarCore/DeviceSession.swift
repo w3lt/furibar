@@ -20,6 +20,7 @@ public struct AckStatus: RawRepresentable, Equatable, Sendable, CustomStringConv
     public static let invalidParameter = AckStatus(rawValue: 0x03)
     public static let notSupported = AckStatus(rawValue: 0x04)
     public static let busy = AckStatus(rawValue: 0x05)
+    public static let targetNotConnected = AckStatus(rawValue: 0x06)
 
     public var description: String {
         switch self {
@@ -29,6 +30,7 @@ public struct AckStatus: RawRepresentable, Equatable, Sendable, CustomStringConv
         case .invalidParameter: "invalid value"
         case .notSupported: "not supported by these earbuds"
         case .busy: "the earbuds are busy"
+        case .targetNotConnected: "the target device isn't connected"
         default: "error \(Hex.byte(rawValue))"
         }
     }
@@ -50,6 +52,12 @@ public struct LogEntry: Identifiable, Sendable {
     public let date: Date
     public let direction: Direction
     public let text: String
+
+    public init(date: Date = Date(), direction: Direction, text: String) {
+        self.date = date
+        self.direction = direction
+        self.text = text
+    }
 }
 
 /// One connection to a pair of earbuds: sends commands, matches ACKs, keeps the reported state.
@@ -66,6 +74,11 @@ public final class DeviceSession {
     private var encoder = FrameEncoder()
     private var decoder = FrameDecoder()
     private var pendingAcks: [UInt8: CheckedContinuation<AckOutcome, Never>] = [:]
+    /// What the earbuds last reported or accepted. A refused change goes back to this,
+    /// not to whatever was on screen, which may itself have been an unconfirmed change.
+    private var confirmed = DeviceState()
+    /// Changes sent per setting that haven't been answered yet.
+    private var unanswered: [SettingType: Int] = [:]
     private static let maxLogEntries = 400
 
     private enum AckOutcome { case status(AckStatus), timeout }
@@ -90,16 +103,23 @@ public final class DeviceSession {
     public func apply(_ change: SettingChange) async throws {
         let record = change.record
         let type = SettingType(record.type)
-        let previous = state.raw[type]
-        state.apply(record)
+        // Commands like "find my earbuds" are actions, not settings: nothing to show.
+        if change.isSetting { state.apply(record) }
         lastError = nil
+        unanswered[type, default: 0] += 1
 
         let seq = send(Payload.write(type, record.value))
-        switch await waitForAck(seq) {
+        let outcome = await waitForAck(seq)
+        unanswered[type, default: 1] -= 1
+        let stillPending = unanswered[type, default: 0] > 0
+        if !stillPending { unanswered[type] = nil }
+
+        switch outcome {
         case .status(.success):
-            return
+            if change.isSetting { confirmed.apply(record) }
         case .status(let status):
-            state.restore(type, previous)
+            // If a newer change to the same setting is on its way, keep showing that one.
+            if change.isSetting, !stillPending { state.restore(type, confirmed.raw[type]) }
             lastError = CommandError.rejected(status).errorDescription
             note("\(type.name): rejected (\(status))")
             throw CommandError.rejected(status)
@@ -109,9 +129,15 @@ public final class DeviceSession {
         }
     }
 
-    /// Diagnostics: send any payload, wrapped in a frame.
-    public func sendRaw(_ payload: [UInt8]) {
+    /// Diagnostics: send any payload, wrapped in a frame. Returns false if it's too long for one frame.
+    @discardableResult
+    public func sendRaw(_ payload: [UInt8]) -> Bool {
+        guard payload.count <= FrameEncoder.maxPayloadLength else {
+            note("Not sent: \(payload.count) bytes is more than one frame can carry (\(FrameEncoder.maxPayloadLength))")
+            return false
+        }
         send(payload)
+        return true
     }
 
     public func clearError() { lastError = nil }
@@ -134,6 +160,7 @@ public final class DeviceSession {
                     resolveAck(seq: record.value[0], outcome: .status(AckStatus(rawValue: record.value[1])))
                 } else {
                     state.apply(record)
+                    confirmed.apply(record)
                     hasReceivedData = true
                 }
             }

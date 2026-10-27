@@ -101,6 +101,15 @@ struct DecoderTests {
         #expect(frames == [InboundFrame(seq: 0x01, records: [LTV(type: 0x09, value: [0x01])])])
     }
 
+    @Test func aStrayHeaderDoesNotHoldUpTheNextFrame() {
+        // DD followed by a length byte that would need ~245 bytes before giving up on it.
+        var decoder = FrameDecoder()
+        let stray: [UInt8] = [0xDD, 0x05, 0xF0, 0x11]
+        let good: [UInt8] = [0xDD, 0x01, 0x03, 0x09, 0x01, 0x01, 0xEC, 0xAA]
+        #expect(decoder.feed(stray).isEmpty)
+        #expect(decoder.feed(good) == [InboundFrame(seq: 0x01, records: [LTV(type: 0x09, value: [0x01])])])
+    }
+
     @Test func decodesTwoFramesInOneChunk() {
         var decoder = FrameDecoder()
         let a: [UInt8] = [0xDD, 0x01, 0x03, 0x09, 0x01, 0x01, 0xEC, 0xAA]
@@ -116,5 +125,26 @@ struct PayloadTests {
 
     @Test func readPayloadIsFAFollowedByTypes() {
         #expect(Payload.read([.battery, .firmwareVersion]) == [0xFA, 0x0C, 0x0D])
+    }
+}
+
+struct HexTests {
+    @Test func parsesSpacedPackedAndColonSeparatedHex() {
+        #expect(Hex.parse("09 01") == [0x09, 0x01])
+        #expect(Hex.parse("0901") == [0x09, 0x01])
+        #expect(Hex.parse("09:01") == [0x09, 0x01])
+        #expect(Hex.parse("fa 0C") == [0xFA, 0x0C])
+    }
+
+    @Test func rejectsEmptyOddLengthAndNonHexInput() {
+        #expect(Hex.parse("") == nil)
+        #expect(Hex.parse("   ") == nil)
+        #expect(Hex.parse("091") == nil)
+        #expect(Hex.parse("zz") == nil)
+    }
+
+    @Test func rejectsSignsThatIntegerParsingWouldAccept() {
+        #expect(Hex.parse("+1") == nil)
+        #expect(Hex.parse("-0") == nil)
     }
 }

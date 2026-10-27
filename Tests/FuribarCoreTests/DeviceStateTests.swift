@@ -102,6 +102,12 @@ struct SettingChangeTests {
         #expect(SettingChange.ancLevel(4).record == LTV(type: 0x2C, value: [0x04]))
     }
 
+    @Test func encodesFindDeviceSides() {
+        #expect(SettingChange.findDevice(.left).record == LTV(type: 0x2F, value: [0x01]))
+        #expect(SettingChange.findDevice(.right).record == LTV(type: 0x2F, value: [0x02]))
+        #expect(SettingChange.findDevice(.stop).record == LTV(type: 0x2F, value: [0x04]))
+    }
+
     @Test func applyingAChangeUpdatesTheState() {
         var s = DeviceState()
         s.apply(SettingChange.noiseMode(.transparency).record)

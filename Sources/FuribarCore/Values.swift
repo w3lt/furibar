@@ -176,6 +176,13 @@ public struct Battery: Equatable, Sendable {
 }
 
 /// A change the user asks for, encoded as the record the earbuds expect.
+/// Which earbud plays the find-me tone. *Assumed:* 01 left, 02 right; 04 stops (from the report).
+public enum FindTarget: UInt8, Sendable {
+    case left = 0x01
+    case right = 0x02
+    case stop = 0x04
+}
+
 public enum SettingChange: Sendable, Equatable {
     case noiseMode(NoiseMode)
     case gameMode(Bool)
@@ -193,6 +200,7 @@ public enum SettingChange: Sendable, Equatable {
     case earAdaptive(Bool)
     case tapControl(Bool)
     case hearingProtection(UInt8)
+    case findDevice(FindTarget)
     /// Anything else, for the Diagnostics raw sender.
     case raw(SettingType, [UInt8])
 
@@ -202,6 +210,14 @@ public enum SettingChange: Sendable, Equatable {
     }
 
     public var type: SettingType { typeAndValue.0 }
+
+    /// False for one-off commands (find my earbuds, raw writes), which don't change a stored setting.
+    public var isSetting: Bool {
+        switch self {
+        case .findDevice, .raw: false
+        default: true
+        }
+    }
 
     private var typeAndValue: (SettingType, [UInt8]) {
         switch self {
@@ -222,6 +238,7 @@ public enum SettingChange: Sendable, Equatable {
         case .earAdaptive(let on): (.earAdaptive, [on ? 0x01 : 0x00])
         case .tapControl(let on): (.tapControl, [on ? 0x01 : 0x00])
         case .hearingProtection(let l): (.hearingProtection, [l])
+        case .findDevice(let t): (.findDevice, [t.rawValue])
         case .raw(let t, let v): (t, v)
         }
     }

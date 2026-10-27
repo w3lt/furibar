@@ -17,6 +17,15 @@ func waitUntil(_ condition: @MainActor () -> Bool) async {
     }
 }
 
+/// A frame from the "earbuds" carrying one record.
+func deviceFrame(seq: UInt8 = 0x01, _ type: SettingType, _ value: [UInt8]) -> [UInt8] {
+    InboundFrame.encode(seq: seq, records: [LTV(type: type.rawValue, value: value)])
+}
+
+func ackFrame(for seq: UInt8, _ status: AckStatus) -> [UInt8] {
+    deviceFrame(seq: seq, .ack, [seq, status.rawValue])
+}
+
 @MainActor
 struct SessionTests {
     @Test func startSendsTheReadAllRequest() {
@@ -95,5 +104,63 @@ struct SessionTests {
         link.deliver([0xDD, 0x01, 0x03, 0x09, 0x01, 0x03, 0xEE, 0xAA])
         #expect(session.log.map(\.direction) == [.sent, .received])
         #expect(session.log.first?.text == "FF 01 02 2F 04 35 AA")
+    }
+
+    @Test func rawPayloadTooLongForOneFrameIsNotSent() {
+        let link = RecordingLink()
+        let session = DeviceSession(link: link)
+        session.sendRaw(Array(repeating: 0x00, count: 256))
+        #expect(link.sent.isEmpty)
+        #expect(session.log.last?.direction == .note)
+    }
+
+    @Test func findDeviceIsSentButNotShownAsAReportedValue() async throws {
+        let demo = DemoEarbuds()
+        let session = DeviceSession(link: demo, ackTimeout: .milliseconds(500))
+        try await session.apply(.findDevice(.left))
+        #expect(session.state.raw[.findDevice] == nil)
+        #expect(session.log.first?.text == "FF 01 02 2F 01 32 AA")
+    }
+
+    // MARK: Overlapping changes to the same setting
+
+    /// Reports ANC, then sends "off" (seq 1) and "transparency" (seq 2) without waiting for ACKs.
+    private func twoPendingNoiseChanges() async -> (RecordingLink, DeviceSession, Task<Void, Never>, Task<Void, Never>) {
+        let link = RecordingLink()
+        let session = DeviceSession(link: link, ackTimeout: .seconds(5))
+        link.deliver(deviceFrame(.noiseMode, [0x01]))
+        let first = Task { _ = try? await session.apply(.noiseMode(.off)) }
+        await waitUntil { link.sent.count == 1 }
+        let second = Task { _ = try? await session.apply(.noiseMode(.transparency)) }
+        await waitUntil { link.sent.count == 2 }
+        return (link, session, first, second)
+    }
+
+    @Test func twoRejectedChangesInARowGoBackToTheLastConfirmedValue() async {
+        let (link, session, first, second) = await twoPendingNoiseChanges()
+        link.deliver(ackFrame(for: 0x01, .notSupported))
+        link.deliver(ackFrame(for: 0x02, .notSupported))
+        await first.value
+        await second.value
+        #expect(session.state.noiseMode == .noiseCancelling)
+    }
+
+    @Test func rejectionWhileANewerChangeIsPendingKeepsTheNewerValue() async {
+        let (link, session, first, second) = await twoPendingNoiseChanges()
+        link.deliver(ackFrame(for: 0x01, .notSupported))
+        await first.value
+        #expect(session.state.noiseMode == .transparency)
+        link.deliver(ackFrame(for: 0x02, .success))
+        await second.value
+        #expect(session.state.noiseMode == .transparency)
+    }
+
+    @Test func rejectionAfterAnAcceptedChangeGoesBackToTheAcceptedValue() async {
+        let (link, session, first, second) = await twoPendingNoiseChanges()
+        link.deliver(ackFrame(for: 0x01, .success))
+        link.deliver(ackFrame(for: 0x02, .notSupported))
+        await first.value
+        await second.value
+        #expect(session.state.noiseMode == .off)
     }
 }

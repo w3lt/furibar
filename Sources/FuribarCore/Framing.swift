@@ -19,7 +19,7 @@ public enum Hex {
     /// Parses "09 01", "0901" or "09:01". Returns nil for odd length or non-hex input.
     public static func parse(_ text: String) -> [UInt8]? {
         let digits = text.filter { !$0.isWhitespace && $0 != ":" && $0 != "," }
-        guard !digits.isEmpty, digits.count % 2 == 0 else { return nil }
+        guard !digits.isEmpty, digits.count % 2 == 0, digits.allSatisfy(\.isHexDigit) else { return nil }
         var out: [UInt8] = []
         var i = digits.startIndex
         while i < digits.endIndex {
@@ -44,6 +44,9 @@ enum FrameByte {
 
 /// Wraps payloads in host frames and keeps the sequence counter.
 public struct FrameEncoder: Sendable {
+    /// LEN is one byte, so this is the most one frame can carry.
+    public static let maxPayloadLength = 0xFF
+
     private var lastSeq: UInt8 = 0
     public init() {}
 
@@ -52,7 +55,7 @@ public struct FrameEncoder: Sendable {
     }
 
     public mutating func encodeWithSeq(_ payload: [UInt8]) -> (seq: UInt8, frame: [UInt8]) {
-        precondition(payload.count <= 0xFF, "payload too long for one frame")
+        precondition(payload.count <= Self.maxPayloadLength, "payload too long for one frame")
         lastSeq &+= 1
         var frame: [UInt8] = [FrameByte.hostHeader, lastSeq, UInt8(payload.count)] + payload
         frame.append(checksum(frame))
@@ -126,8 +129,6 @@ public struct InboundFrame: Equatable, Sendable {
 /// serial read delivers; it buffers partial frames and resynchronises after bad bytes.
 public struct FrameDecoder: Sendable {
     private var buffer: [UInt8] = []
-    /// Safety valve: never wait for more than this many bytes for one frame.
-    private let maxBuffered = 1024
 
     public init() {}
 
@@ -144,18 +145,30 @@ public struct FrameDecoder: Sendable {
             if start > 0 { buffer.removeFirst(start) }
             guard buffer.count >= 3 else { break }
 
-            switch tryFrame() {
+            switch tryFrame(at: 0) {
             case .frame(let frame, let length):
                 frames.append(frame)
                 buffer.removeFirst(length)
-            case .needMore where buffer.count < maxBuffered:
-                return frames
-            case .needMore, .invalid:
+            case .needMore:
+                // Usually the rest of this frame is on its way. But if a complete frame
+                // already follows, this header was a stray byte: skip ahead to that frame.
+                guard let next = laterCompleteFrame() else { return frames }
+                buffer.removeFirst(next)
+            case .invalid:
                 // Not a frame at this header: drop it and look for the next one.
                 buffer.removeFirst()
             }
         }
         return frames
+    }
+
+    private func laterCompleteFrame() -> Int? {
+        var i = 1
+        while let next = buffer[i...].firstIndex(of: FrameByte.deviceHeader) {
+            if case .frame = tryFrame(at: next) { return next }
+            i = next + 1
+        }
+        return nil
     }
 
     private enum Attempt {
@@ -166,20 +179,24 @@ public struct FrameDecoder: Sendable {
 
     /// The report could not confirm what the inbound LEN byte counts, so try the plausible
     /// readings (payload only, payload + SUM + AA, whole frame) and keep the one that checks out.
-    private func tryFrame() -> Attempt {
-        let len = Int(buffer[2])
+    private func tryFrame(at start: Int) -> Attempt {
+        let available = buffer.count - start
+        guard available >= 3 else { return .needMore }
+        let b = buffer[start...]
+        let len = Int(b[start + 2])
         let candidates = Set([3 + len + 2, 3 + len, len]).filter { $0 >= 5 }.sorted()
         var waiting = false
         for total in candidates {
-            guard buffer.count >= total else {
+            guard available >= total else {
                 waiting = true
                 continue
             }
-            guard buffer[total - 1] == FrameByte.tail else { continue }
-            let sum = buffer[total - 2]
-            guard sum == checksum(buffer[0..<(total - 2)]) || sum == checksum(buffer[2..<(total - 2)]) else { continue }
-            guard let records = LTV.split(Array(buffer[3..<(total - 2)])) else { continue }
-            return .frame(InboundFrame(seq: buffer[1], records: records), length: total)
+            let end = start + total
+            guard b[end - 1] == FrameByte.tail else { continue }
+            let sum = b[end - 2]
+            guard sum == checksum(b[start..<(end - 2)]) || sum == checksum(b[(start + 2)..<(end - 2)]) else { continue }
+            guard let records = LTV.split(Array(b[(start + 3)..<(end - 2)])) else { continue }
+            return .frame(InboundFrame(seq: b[start + 1], records: records), length: total)
         }
         return waiting ? .needMore : .invalid
     }
